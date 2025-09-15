@@ -12,9 +12,10 @@ codex-core = { path = "../core" }
 codex-protocol = { path = "../protocol" }
 serde = { version = "1", optional = true }
 toml = { version = "0.9", optional = true }
+serde_json = { version = "1", optional = true }
 
 [features]
 # Separate feature so that `clap` is not a mandatory dependency.
-cli = ["clap", "serde", "toml"]
+cli = ["clap", "serde", "toml", "serde_json"]
 elapsed = []
 sandbox_summary = []

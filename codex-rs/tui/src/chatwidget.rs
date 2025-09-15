@@ -78,8 +78,8 @@ use crate::streaming::controller::AppEventHistorySink;
 use crate::streaming::controller::StreamController;
 use codex_common::approval_presets::ApprovalPreset;
 use codex_common::approval_presets::builtin_approval_presets;
-use codex_common::model_presets::ModelPreset;
-use codex_common::model_presets::builtin_model_presets;
+use codex_common::model_presets::OwnedModelPreset;
+use codex_common::model_presets::load_model_presets_owned;
 use codex_core::ConversationManager;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
@@ -1171,14 +1171,14 @@ impl ChatWidget {
     pub(crate) fn open_model_popup(&mut self) {
         let current_model = self.config.model.clone();
         let current_effort = self.config.model_reasoning_effort;
-        let presets: &[ModelPreset] = builtin_model_presets();
+        let presets: Vec<OwnedModelPreset> = load_model_presets_owned();
 
         let mut items: Vec<SelectionItem> = Vec::new();
         for preset in presets.iter() {
-            let name = preset.label.to_string();
-            let description = Some(preset.description.to_string());
+            let name = preset.label.clone();
+            let description = Some(preset.description.clone());
             let is_current = preset.model == current_model && preset.effort == current_effort;
-            let model_slug = preset.model.to_string();
+            let model_slug = preset.model.clone();
             let effort = preset.effort;
             let current_model = current_model.clone();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {

@@ -263,17 +263,21 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
         (
             "openai",
             P {
-                name: "OpenAI".into(),
-                // Allow users to override the default OpenAI endpoint by
-                // exporting `OPENAI_BASE_URL`. This is useful when pointing
-                // Codex at a proxy, mock server, or Azure-style deployment
-                // without requiring a full TOML override for the built-in
-                // OpenAI provider.
-                base_url: std::env::var("OPENAI_BASE_URL")
-                    .ok()
-                    .filter(|v| !v.trim().is_empty()),
+                // Repurpose the built-in "openai" provider to target a local
+                // server by default. This removes any dependency on OpenAI's
+                // hosted API while keeping existing config references working.
+                name: "Localhost".into(),
+                // Prefer LOCALHOST_BASE_URL; fall back to http://localhost:3000/v1.
+                base_url: Some(
+                    std::env::var("LOCALHOST_BASE_URL")
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                        .unwrap_or_else(|| "http://localhost:3000/v1".to_string()),
+                ),
+                // No API key or auth is required for the localhost provider.
                 env_key: None,
                 env_key_instructions: None,
+                // Speak the Responses API over SSE when available.
                 wire_api: WireApi::Responses,
                 query_params: None,
                 http_headers: Some(
@@ -281,22 +285,14 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                         .into_iter()
                         .collect(),
                 ),
-                env_http_headers: Some(
-                    [
-                        (
-                            "OpenAI-Organization".to_string(),
-                            "OPENAI_ORGANIZATION".to_string(),
-                        ),
-                        ("OpenAI-Project".to_string(), "OPENAI_PROJECT".to_string()),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ),
+                // No env-sourced headers for localhost.
+                env_http_headers: None,
                 // Use global defaults for retry/timeout unless overridden in config.toml.
                 request_max_retries: None,
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
-                requires_openai_auth: true,
+                // Never require OpenAI auth for localhost.
+                requires_openai_auth: false,
             },
         ),
         (BUILT_IN_OSS_MODEL_PROVIDER_ID, create_oss_provider()),

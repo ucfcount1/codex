@@ -138,6 +138,33 @@ model_provider = "ollama"
 model = "mistral"
 ```
 
+## Custom model selection list
+
+The TUI `/model` menu can read your preferred model list from a JSON file.
+
+- Default path: `$CODEX_HOME/models.json` (typically `~/.codex/models.json`)
+- Override path: set `CODEX_MODELS_FILE=/path/to/models.json`
+
+Format options:
+
+- Simple list of model slugs:
+
+  ```json
+  ["Qwen3-coder", "Qwen3-235B", "Qwen3-Max.Preview"]
+  ```
+
+- Detailed entries with optional metadata and effort:
+
+  ```json
+  [
+    {"model": "Qwen3-coder", "label": "Qwen3 coder", "description": "fast coder", "effort": "low"},
+    {"model": "Qwen3-235B", "label": "Qwen3 235B", "effort": "medium"},
+    {"model": "Qwen3-Max.Preview", "label": "Qwen3 Max (Preview)", "effort": "high"}
+  ]
+  ```
+
+If the file is missing or invalid, Codex falls back to the built‑in presets.
+
 ## approval_policy
 
 Determines when the user should be prompted to approve whether Codex can execute a command:

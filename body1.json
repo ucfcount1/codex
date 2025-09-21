@@ -1,0 +1,7 @@
+{
+  "model": "codex-local-test",
+  "instructions": "You are a coding agent. Use ONLY apply_patch and finish after success.",
+  "input": [
+    {"role":"user","content":[{"type":"text","text":"update the file test.js. add the soustraction and the multiplication to it."}]}
+  ]
+}

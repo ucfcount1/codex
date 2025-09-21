@@ -4,7 +4,8 @@
   "description": "Tools for repo-wide maintenance.",
   "scripts": {
     "format": "prettier --check *.json *.md .github/workflows/*.yml **/*.js",
-    "format:fix": "prettier --write *.json *.md .github/workflows/*.yml **/*.js"
+    "format:fix": "prettier --write *.json *.md .github/workflows/*.yml **/*.js",
+    "mock-openai": "node mock-openai/server.js"
   },
   "devDependencies": {
     "prettier": "^3.5.3"
@@ -23,8 +24,14 @@
   },
   "packageManager": "pnpm@10.8.1",
   "dependencies": {
+    "add": "^2.0.6",
+    "axios": "^1.12.2",
     "cors": "^2.8.5",
+    "crypto": "^1.0.1",
     "dotenv": "^17.2.2",
-    "express": "^5.1.0"
+    "eventsource": "^4.0.0",
+    "eventsource-parser": "^3.0.6",
+    "express": "^5.1.0",
+    "open": "^8.4.2"
   }
 }

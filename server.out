@@ -1,0 +1,22 @@
+[dotenv@17.2.2] injecting env (0) from .env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+Fake LLM server running at http://localhost:3000
+2025-09-15T20:57:00.011Z POST /v1/responses
+📂 Found cached token, saved at 2025-09-15T20:02:35.912Z
+⏳ Cached token still valid.
+✅ Using cached token
+📝 Starting a new chat...
+✅ Chat created with ID: 556b25ef-8bd3-48c8-b939-8497918eb7dc
+📡 Streaming response (waiting for chunks...)
+
+--- ✅ Stream finished ---
+{"tool_calls":[{"type":"apply_patch","arguments":{"path":"IGNORED","patch":"*** Begin Patch\n*** Update File: agent.js\n@@ -1,1 +1,1 @@\n-// TODO: Implement coding agent logic\n+console.log('Coding agent initialized');\n*** End Patch"}}]} --------out
+{ tool_calls: [ { type: 'apply_patch', arguments: [Object] } ] } -__-----------answer
+2025-09-15T20:57:06.494Z POST /v1/responses
+📂 Found cached token, saved at 2025-09-15T20:02:35.912Z
+⏳ Cached token still valid.
+✅ Using cached token
+📡 Streaming response (waiting for chunks...)
+
+--- ✅ Stream finished ---
+{"assistant_message":"The patch has been successfully applied."} --------out
+{ assistant_message: 'The patch has been successfully applied.' } -__-----------answer

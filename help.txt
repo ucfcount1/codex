@@ -1,0 +1,243 @@
+Codex Model Integration Guide
+================================
+
+This document summarizes how Codex (in this repository, the Rust `codex-rs` workspace) communicates with a model server, what requests it sends, and what response stream the model must emit. It is based solely on the Codex source code and docs (not on any custom glue like chat.js/qwen.js).
+
+
+Overview
+--------
+- Codex drives an external “Model” over an HTTP API compatible with OpenAI’s experimental Responses API. See code in:
+  - codex-rs/core/src/client.rs (request building + SSE parsing)
+  - codex-rs/core/src/openai_tools.rs (tools advertised to the model)
+  - codex-rs/core/src/codex.rs (how streamed items are executed and fed back)
+  - codex-rs/protocol/src/models.rs (internal data model for streamed items)
+  - codex-rs/docs/protocol_v1.md (high-level flow and terms)
+
+- Codex sends a JSON request and expects a Server-Sent Events (SSE) stream of JSON event payloads. Codex consumes incremental events as they arrive (for real-time streaming), and considers a turn complete only after it receives a final `response.completed` event.
+
+
+Request Shape (what Codex sends)
+---------------------------------
+Codex posts a JSON request body to a Responses-compatible endpoint. The body includes:
+
+- `model`: string – The model identifier configured in Codex.
+- `instructions`: string – A full instruction string (Codex’s “system prompt”).
+- `input`: array – A list of items representing the turn input (assistant messages and/or tool outputs from the previous turn). These are structured using Codex’s own schema but flattened into the Responses API’s expected JSON. Notable items include:
+  - Assistant message: encoded as a message entry with role/content.
+  - Function/tool outputs: encoded as tool result messages so the model can continue the chain-of-thought.
+- `tools`: array – The set of tools the model may call this turn. Which tools appear depends on Codex configuration and the model family; see “Tools” below.
+- `tool_choice`: "auto"
+- `parallel_tool_calls`: false
+- `reasoning`: optional – Included for model families that support reasoning summaries.
+- `store`: boolean – Implementation detail for Azure Responses; Codex may set true as a workaround.
+- `stream`: true – The model must stream results via SSE.
+- `include`: optional – May include "reasoning.encrypted_content" when reasoning is enabled.
+- `prompt_cache_key`: string – A conversation/thread identifier Codex uses to help caching.
+
+Notes:
+- Codex builds this request in core/src/client.rs; see how it assembles `instructions`, `input`, and `tools`.
+- For OSS models (`gpt-oss` family), Codex prefers an `apply_patch` JSON function tool; for other families, it may prefer a “freeform” custom tool, but both are supported (details below).
+
+
+SSE Response Stream (what Codex expects)
+----------------------------------------
+The model must emit an SSE stream with events named using the Responses API schema. Codex parses these in core/src/client.rs, function `process_sse()`. Important events:
+
+- `response.created`
+  - JSON: `{ "type": "response.created", "response": { /* may include id */ } }`
+  - Signals start of a streamed turn.
+
+- `response.output_item.done`
+  - JSON: `{ "type": "response.output_item.done", "item": { ... } }`
+  - The `item` field carries a single “output item” – e.g., an assistant message, a function/tool call, or a custom tool call. Codex forwards these live as they arrive and may execute tool calls immediately.
+
+- `response.output_text.delta` (optional)
+  - JSON: `{ "type": "response.output_text.delta", "delta": "..." }`
+  - Streaming text chunks. Codex uses these to live-stream assistant text when present.
+
+- `response.reasoning_summary_text.delta` and `response.reasoning_text.delta` (optional)
+  - JSON: deltas for reasoning summaries/content (supported for some model families).
+
+- `response.output_item.added` (optional)
+  - Used by some providers to announce items before they are done; Codex mostly acts on `output_item.done`.
+
+- `response.completed` (REQUIRED to end the turn)
+  - JSON: `{ "type": "response.completed", "response": { "id": "...", "usage": { ... } } }`
+  - Codex waits for this event to consider the turn finished. If the stream ends before this event, Codex treats it as an error ("stream closed before response.completed").
+
+- `response.failed` (error path)
+  - JSON: `{ "type": "response.failed", "response": { "error": { ... } } }`
+  - Signals a turn-level failure; Codex extracts the error object and may retry based on provider policy.
+
+Only send the actual items on the stream; do not duplicate them inside an `output` array in `response.completed` (Codex’s client code ignores such duplication to prevent double-processing).
+
+
+Output Item Shapes (the `item` in output_item.done)
+---------------------------------------------------
+Codex parses `item` into `ResponseItem` (see protocol/src/models.rs). Supported variants and their canonical JSON shapes:
+
+1) Assistant Message
+   - `{ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "..." }] }`
+   - Use for plain assistant text. Multiple `output_text` chunks can be streamed via `response.output_text.delta` or as separate messages.
+
+2) Function Call (JSON function tool)
+   - `{ "type": "function_call", "name": "TOOL_NAME", "arguments": "{...}", "call_id": "ID" }`
+   - IMPORTANT:
+     - `arguments` must be a STRING containing JSON (Codex expects a raw JSON string here and parses it downstream).
+     - `call_id` is required; Codex uses it to correlate the eventual tool output.
+
+3) Local Shell Call
+   - `{ "type": "local_shell_call", "call_id": "ID", "status": "in_progress", "action": { "type": "exec", "command": ["bash", "-lc", "..."], "timeout_ms": 120000 } }`
+   - Codex can execute this directly (see core/src/codex.rs), but many configurations prefer the unified `exec_command` function tool instead of `local_shell_call`.
+
+4) Custom Tool Call
+   - `{ "type": "custom_tool_call", "call_id": "ID", "name": "TOOL_NAME", "input": "STRING" }`
+   - Used for "freeform" tools (notably, one flavor of `apply_patch`). Codex recognizes `name: "apply_patch"` and executes the patch via its built-in patch engine.
+
+5) Web Search Call
+   - `{ "type": "web_search_call", ... }` (rarely used; Codex forwards these for UI purposes).
+
+Note: Tool calls should be sent one-per `response.output_item.done` event. Codex executes them and feeds the outputs back into the next turn.
+
+
+Tooling (what tools Codex advertises, and how to call them)
+-----------------------------------------------------------
+Codex exposes a set of tools to the model; the exact set depends on configuration and model family (see core/src/openai_tools.rs and core/src/model_family.rs). Key tools:
+
+1) apply_patch (editing files)
+   - Two supported implementations (Codex supports both on the stream):
+     a) JSON function tool (preferred for some OSS models)
+        - Call via Function Call:
+          `{ "type": "function_call", "name": "apply_patch", "arguments": "{\"input\":\"<PATCH>\"}", "call_id": "ID" }`
+        - The `input` field contains the entire patch envelope as a single string.
+     b) Freeform custom tool (widely supported)
+        - Call via Custom Tool Call:
+          `{ "type": "custom_tool_call", "name": "apply_patch", "input": "<PATCH>", "call_id": "ID" }`
+   - Patch format (enforced by Codex’s patch engine):
+     - Must use the envelope:
+       ```
+       *** Begin Patch
+       [ one or more file sections ]
+       *** End Patch
+       ```
+     - Within the envelope, each file section starts with one of:
+       - `*** Add File: <path>`
+       - `*** Update File: <path>` [optional `*** Move to: <new path>`]
+       - `*** Delete File: <path>`
+     - Changes are expressed using unified-diff-like hunks `@@` and lines prefixed with `+`, `-`, or space.
+
+   - After Codex applies the patch, it emits a tool output (FunctionCallOutput or CustomToolCallOutput) that is fed into the next request’s `input` so the model can see success/failure.
+
+2) exec_command (unified shell)
+   - JSON function tool for executing shell commands in a controlled session (see core/src/exec_command/responses_api.rs).
+   - Call via Function Call:
+     `{ "type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"<SHELL COMMAND>\"}", "call_id": "ID" }`
+   - Optional fields in `arguments`: `yield_time_ms`, `max_output_tokens`, `shell`, `login`.
+   - Codex executes the command, streams output, and returns a function_call_output back into the next turn.
+
+3) local_shell (legacy/alt path)
+   - Custom Responses feature: `{ "type": "local_shell_call", ... }` (see above). Codex executes it similarly, but many configurations prefer `exec_command` instead of this special form.
+
+4) Other tools
+   - Codex can also include `write_stdin` for interactive exec sessions, a plan tool, web search, and any MCP tools configured. All are advertised in the `tools` array; the model should only call tools that appear.
+
+
+How Codex Uses Tool Outputs
+---------------------------
+- When a tool call arrives on the stream, Codex executes it immediately and produces a corresponding tool output object:
+  - Function tool result → `function_call_output` with `{ success: bool, content: string }` (embedded in the next turn’s `input`).
+  - Custom tool result → `custom_tool_call_output` with `{ output: string }`.
+- The output’s `call_id` must match the original tool call’s `call_id`.
+- On the next turn, the model receives these outputs in the `input` array; the model should read them and decide whether to continue (e.g., propose another tool call) or send a final assistant message.
+
+
+Turn Lifecycle (what starts/ends a turn)
+----------------------------------------
+1) Codex sends a request with the new user input + any prior tool outputs as context.
+2) Model streams SSE events:
+   - Optional text/reasoning deltas
+   - One or more `response.output_item.done` items (assistant message or tool calls)
+3) Codex may execute tools as they appear, capturing outputs for the next turn.
+4) The model must send `response.completed` to terminate the stream.
+5) Codex then decides whether to start another turn (if the model produced actionable output to consume), or to finish the task (no further output/tool calls).
+
+Important contracts to avoid loops
+----------------------------------
+- Always end the SSE stream with `response.completed`.
+- For tool calls:
+  - Provide a `call_id` and ensure `arguments` is a STRING for function calls.
+  - Only call tools that Codex advertised in the `tools` array for that turn.
+- After Codex applies an `apply_patch`, it feeds a success/failure tool-output into the next turn’s `input`. The model should:
+  - Recognize success and send a normal assistant message (no further tool calls) when the task is complete.
+  - Avoid repeating the same patch or issuing redundant workspace exploration commands.
+
+
+Examples (concise)
+------------------
+Assistant text only:
+  event: response.output_item.done
+  data: {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "message",
+      "role": "assistant",
+      "content": [{"type": "output_text", "text": "All set."}]
+    }
+  }
+
+apply_patch via JSON function tool:
+  event: response.output_item.done
+  data: {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "function_call",
+      "name": "apply_patch",
+      "arguments": "{\"input\":\"*** Begin Patch\n*** Update File: test.js\n@@\n+function subtract(a,b){return a-b;}\n*** End Patch\"}",
+      "call_id": "call_123"
+    }
+  }
+
+apply_patch via Custom Tool Call (freeform):
+  event: response.output_item.done
+  data: {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "custom_tool_call",
+      "name": "apply_patch",
+      "input": "*** Begin Patch\n*** Update File: test.js\n@@\n+function subtract(a,b){return a-b;}\n*** End Patch",
+      "call_id": "call_456"
+    }
+  }
+
+exec_command:
+  event: response.output_item.done
+  data: {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "function_call",
+      "name": "exec_command",
+      "arguments": "{\"cmd\":\"rg -n subtract test.js\"}",
+      "call_id": "call_789"
+    }
+  }
+
+Stream termination:
+  event: response.completed
+  data: {
+    "type": "response.completed",
+    "response": {
+      "id": "resp_abc",
+      "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    }
+  }
+
+
+Quick checklist for a model server
+----------------------------------
+- Accept JSON request with `instructions`, `input`, `tools`, and `stream: true`.
+- Stream SSE with at least: `response.created`, one or more `response.output_item.done`, and `response.completed`.
+- Encode tool calls as described (arguments as JSON string; call_id present).
+- Use either function or custom tool form for `apply_patch` and include the full patch envelope.
+- Do not include a duplicate `output` array in `response.completed`.
+- End the stream on every turn (avoid indefinite streaming).
+

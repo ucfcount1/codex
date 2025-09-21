@@ -1,0 +1,8 @@
+{
+  "model": "codex-local-test",
+  "instructions": "You are a coding agent.",
+  "input": [
+    {"type":"function_call_output","call_id":"call_apply_patch_1","output":{"success":true,"content":"patch applied OK"}},
+    {"role":"user","content":[{"type":"text","text":"continue"}]}
+  ]
+}
